@@ -1,5 +1,5 @@
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Union
+from typing import Union
 
 from django.db.models.expressions import Exists, OuterRef
 
@@ -7,19 +7,15 @@ from ..page.models import Page
 from ..product.models import Product, ProductVariant
 from .models import (
     AssignedPageAttributeValue,
-    AssignedProductAttribute,
     AssignedProductAttributeValue,
     AssignedVariantAttribute,
     AssignedVariantAttributeValue,
     Attribute,
+    AttributeProduct,
     AttributeValue,
 )
 
-AttributeAssignmentType = Union[AssignedVariantAttribute, AssignedProductAttribute]
 T_INSTANCE = Union[Product, ProductVariant, Page]
-
-if TYPE_CHECKING:
-    from .models import AttributePage, AttributeProduct, AttributeVariant
 
 
 def disassociate_attributes_from_instance(
@@ -34,17 +30,26 @@ def disassociate_attributes_from_instance(
     values = AttributeValue.objects.filter(
         attribute_id__in=[attr.id for attr in attributes]
     )
-    AssignedPageAttributeValue.objects.filter(
-        Exists(values.filter(id=OuterRef("value_id"))),
-        page_id=instance.pk,
-    ).delete()
+    if isinstance(instance, Page):
+        AssignedPageAttributeValue.objects.filter(
+            Exists(values.filter(id=OuterRef("value_id"))),
+            page_id=instance.pk,
+        ).delete()
+        return
+
+    if isinstance(instance, Product):
+        AssignedProductAttributeValue.objects.filter(
+            Exists(values.filter(id=OuterRef("value_id"))),
+            product_id=instance.pk,
+        ).delete()
+        return
 
 
 def associate_attribute_values_to_instance(
     instance: T_INSTANCE,
     attribute: Attribute,
     *values: AttributeValue,
-) -> Union[None, AttributeAssignmentType]:
+) -> Union[None, AssignedVariantAttribute]:
     """Assign given attribute values to a product or variant.
 
     Note: be aware this function invokes the ``set`` method on the instance's
@@ -58,6 +63,26 @@ def associate_attribute_values_to_instance(
 
     # Associate the attribute and the passed values
     return _associate_attribute_to_instance(instance, attribute, *values)
+
+
+def validate_product_type_owns_attribute(
+    instance: Product, *attributes: Attribute
+) -> None:
+    """Check given value IDs are belonging to the given attribute.
+
+    :raise: AssertionError
+    """
+    allowed_attribute_ids: set[int] = set(
+        AttributeProduct.objects.filter(
+            product_type_id=instance.product_type_id
+        ).values_list("attribute_id", flat=True)
+    )
+    attribute_ids_to_check: set[int] = set([attribute.pk for attribute in attributes])
+    found_associated_ids = allowed_attribute_ids & attribute_ids_to_check
+    if found_associated_ids != attribute_ids_to_check:
+        raise AssertionError(
+            "Some attributes are not assigned to the associated ProductType."
+        )
 
 
 def validate_attribute_owns_values(attribute: Attribute, value_ids: set[int]) -> None:
@@ -78,7 +103,7 @@ def _associate_attribute_to_instance(
     instance: T_INSTANCE,
     attribute: Attribute,
     *values: AttributeValue,
-) -> Union[None, AttributeAssignmentType]:
+) -> Union[None, AssignedVariantAttribute]:
     """Associate a given attribute to an instance.
 
     For a given instance assign an attribute to it and set values based on *values.
@@ -106,30 +131,25 @@ def _associate_attribute_to_instance(
         sort_assigned_attribute_values(instance, attribute, values)
         return None
 
-    assignment: AttributeAssignmentType
-
     if isinstance(instance, Product):
-        attribute_rel: Union[
-            "AttributeProduct", "AttributeVariant", "AttributePage"
-        ] = instance.product_type.attributeproduct.get(attribute_id=attribute.pk)
-
-        assignment, _ = AssignedProductAttribute.objects.get_or_create(
-            product=instance, assignment=attribute_rel
-        )
-        assignment.values.set(values)
-
-        sort_assigned_attribute_values_using_assignment(instance, assignment, values)
-
-        # While migrating to a new structure we need to make sure we also
-        # copy the assigned product to AssignedProductAttributeValue
-        # where it will live after issue #12881 will be implemented
+        # Clear all assignments that don't match the values we'd like to assign
+        values_qs = AttributeValue.objects.filter(attribute_id=attribute.pk)
         AssignedProductAttributeValue.objects.filter(
-            assignment_id=assignment.pk
-        ).update(product_id=instance.pk)
+            Exists(values_qs.filter(id=OuterRef("value_id"))),
+            product_id=instance.pk,
+        ).exclude(value__in=values).delete()
 
-        return assignment
+        # Create new assignments
+        for value in values:
+            AssignedProductAttributeValue.objects.get_or_create(
+                product=instance, value=value
+            )
+
+        sort_assigned_attribute_values(instance, attribute, values)
+        return None
 
     if isinstance(instance, ProductVariant):
+        assignment: AssignedVariantAttribute
         attribute_variant = instance.product.product_type.attributevariant.get(
             attribute_id=attribute.pk
         )
@@ -138,7 +158,6 @@ def _associate_attribute_to_instance(
             variant=instance, assignment=attribute_variant
         )
         assignment.values.set(values)
-
         sort_assigned_attribute_values_using_assignment(instance, assignment, values)
         return assignment
 
@@ -146,14 +165,13 @@ def _associate_attribute_to_instance(
 
 
 def sort_assigned_attribute_values_using_assignment(
-    instance: T_INSTANCE,
-    assignment: AttributeAssignmentType,
+    instance: ProductVariant,
+    assignment: AssignedVariantAttribute,
     values: Iterable[AttributeValue],
 ) -> None:
     """Sort assigned attribute values based on values list order."""
     instance_to_value_assignment_mapping = {
         "ProductVariant": ("variantvalueassignment", AssignedVariantAttributeValue),
-        "Product": ("productvalueassignment", AssignedProductAttributeValue),
     }
     assignment_lookup, assignment_model = instance_to_value_assignment_mapping[
         instance.__class__.__name__
@@ -163,6 +181,7 @@ def sort_assigned_attribute_values_using_assignment(
     values_assignment = list(
         getattr(assignment, assignment_lookup).select_related("value")
     )
+
     values_assignment.sort(key=lambda e: values_pks.index(e.value.pk))
     for index, value_assignment in enumerate(values_assignment):
         value_assignment.sort_order = index
@@ -171,7 +190,7 @@ def sort_assigned_attribute_values_using_assignment(
 
 
 def sort_assigned_attribute_values(
-    instance: Page,
+    instance: Union[Page, Product],
     attribute: Attribute,
     values: Iterable[AttributeValue],
 ) -> None:
@@ -187,4 +206,12 @@ def sort_assigned_attribute_values(
     for index, value_assignment in enumerate(values_assignment):
         value_assignment.sort_order = index
 
-    AssignedPageAttributeValue.objects.bulk_update(values_assignment, ["sort_order"])
+    if isinstance(instance, Page):
+        AssignedPageAttributeValue.objects.bulk_update(
+            values_assignment, ["sort_order"]
+        )
+
+    if isinstance(instance, Product):
+        AssignedProductAttributeValue.objects.bulk_update(
+            values_assignment, ["sort_order"]
+        )

@@ -1,11 +1,19 @@
+from collections import defaultdict
 from collections.abc import Iterable
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 from urllib.parse import urlencode
 
+from django.db.models import prefetch_related_objects
+from django.db.models.expressions import Exists, OuterRef
 from django.forms import model_to_dict
 
 from ..account.models import StaffNotificationRecipient
+from ..attribute.models import (
+    AssignedProductAttributeValue,
+    Attribute,
+    AttributeProduct,
+)
 from ..core.notification.utils import get_site_context
 from ..core.notify_events import NotifyEventType
 from ..core.prices import quantize_price, quantize_price_fields
@@ -46,16 +54,34 @@ def get_default_images_payload(images: list[ProductMedia]):
     return {"first_image": first_image_payload, "images": images_payload}
 
 
-def get_product_attributes(product):
-    attributes = product.attributes.all()
+def get_product_attributes_payload(product):
+    product_attributes = AttributeProduct.objects.filter(
+        product_type_id=product.product_type_id
+    )
+    attributes = (
+        Attribute.objects.filter(
+            Exists(product_attributes.filter(attribute_id=OuterRef("id")))
+        )
+        .order_by("attributeproduct__sort_order")
+        .iterator()
+    )
+    assigned_values = AssignedProductAttributeValue.objects.filter(
+        product_id=product.pk
+    )
+    prefetch_related_objects(assigned_values, "value")
+
+    values_map = defaultdict(list)
+    for av in assigned_values:
+        values_map[av.value.attribute_id].append(av.value)
+
     attributes_payload = []
     for attr in attributes:
         attributes_payload.append(
             {
                 "assignment": {
                     "attribute": {
-                        "slug": attr.assignment.attribute.slug,
-                        "name": attr.assignment.attribute.name,
+                        "slug": attr.slug,
+                        "name": attr.name,
                     }
                 },
                 "values": [
@@ -65,7 +91,7 @@ def get_product_attributes(product):
                         "slug": value.slug,
                         "file_url": value.file_url,
                     }
-                    for value in attr.values.all()
+                    for value in values_map[attr.id]
                 ],
             }
         )
@@ -77,7 +103,7 @@ def get_product_payload(product: Product):
     images = [media for media in all_media if media.type == ProductMediaTypes.IMAGE]
     return {
         "id": to_global_id_or_none(product),
-        "attributes": get_product_attributes(product),
+        "attributes": get_product_attributes_payload(product),
         "weight": str(product.weight or ""),
         **get_default_images_payload(images),
     }
@@ -239,10 +265,10 @@ def get_default_order_payload(order: "Order", redirect_url: str = ""):
     tax = order.total_gross_amount - order.total_net_amount or Decimal(0)
 
     lines = order.lines.prefetch_related(
-        "variant__product__media",
         "variant__media",
-        "variant__product__attributes__assignment__attribute",
-        "variant__product__attributes__values",
+        "variant__product__media",
+        "variant__product__attributevalues__value",
+        "variant__product__product_type__attributeproduct__attribute",
     ).all()
     currency = order.currency
     quantize_price_fields(order, fields=ORDER_PRICE_FIELDS, currency=currency)

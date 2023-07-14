@@ -31,6 +31,7 @@ All notable, unreleased changes to this project will be documented in this file.
 - Add transaction items deletion to cleardb command. - #14198 by @jakubkuc
 - Added validation for timestamp comparison #14025 by @ritanjandawn
 - Page -> Attributes refactor. The goal is to simplify the attribute models. The current attribute model relations are complex and really hard to understand. - #13621
+- Change the Attribute - Product relation to decrease code complexity and make it easier to understand the relations - #13407 by @aniav
 
 # 3.17.0
 
