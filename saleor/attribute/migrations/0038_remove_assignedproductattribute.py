@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("attribute", "0036_assignedproductattributevalue_product_data_migration"),
+        ("attribute", "0037_remove_assignedpageattribute"),
     ]
 
     state_operations = [

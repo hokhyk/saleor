@@ -39,6 +39,8 @@ from ..utils import get_nodes
 if TYPE_CHECKING:
     from django.db.models import QuerySet
 
+    from ...attribute.models import Attribute
+
 
 @dataclass
 class AttrValuesForSelectableFieldInput:
