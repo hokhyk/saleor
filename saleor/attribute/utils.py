@@ -195,23 +195,34 @@ def sort_assigned_attribute_values(
     values: Iterable[AttributeValue],
 ) -> None:
     values_pks = [value.pk for value in values]
-
     values_qs = AttributeValue.objects.filter(attribute_id=attribute.pk)
-    values_assignment = list(
-        instance.attributevalues.filter(
-            Exists(values_qs.filter(id=OuterRef("value_id"))),
-        )
-    )
-    values_assignment.sort(key=lambda e: values_pks.index(e.value_id))
-    for index, value_assignment in enumerate(values_assignment):
-        value_assignment.sort_order = index
 
     if isinstance(instance, Page):
-        AssignedPageAttributeValue.objects.bulk_update(
-            values_assignment, ["sort_order"]
+        assigned_page_values = list(
+            instance.attributevalues.filter(
+                Exists(values_qs.filter(id=OuterRef("value_id"))),
+            ).iterator()
         )
+        assigned_page_values.sort(key=lambda e: values_pks.index(e.value_id))
+        for index, page_value_assignment in enumerate(assigned_page_values):
+            page_value_assignment.sort_order = index
+        AssignedPageAttributeValue.objects.bulk_update(
+            assigned_page_values,
+            ["sort_order"],
+        )
+        return
 
     if isinstance(instance, Product):
-        AssignedProductAttributeValue.objects.bulk_update(
-            values_assignment, ["sort_order"]
+        assigned_product_values = list(
+            instance.attributevalues.filter(
+                Exists(values_qs.filter(id=OuterRef("value_id"))),
+            ).iterator()
         )
+        assigned_product_values.sort(key=lambda e: values_pks.index(e.value_id))
+        for index, product_value_assignment in enumerate(assigned_product_values):
+            product_value_assignment.sort_order = index
+        AssignedProductAttributeValue.objects.bulk_update(
+            assigned_product_values,
+            ["sort_order"],
+        )
+        return
