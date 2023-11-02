@@ -53,7 +53,8 @@ class Migration(migrations.Migration):
                 ORDER BY ID DESC
                 FOR UPDATE
             );
-            """,  # noqa
+            """,
+            reverse_sql=migrations.RunSQL.noop  # noqa
         ),
         # Set FKs to allow null values before marking their models/fields deleted
         migrations.AlterField(
@@ -102,7 +103,11 @@ class Migration(migrations.Migration):
             ALTER TABLE attribute_assignedproductattributevalue
             DROP CONSTRAINT IF EXISTS
             attribute_assignedpa_assignment_id_6863be0a_fk_attribute
-            """
+
+            ALTER TABLE attribute_assignedproductattributevalue
+            DROP CONSTRAINT IF EXISTS
+            attribute_assignedproduc_value_id_assignment_id_ad6f5a87_uniq
+            """, reverse_sql=migrations.RunSQL.noop
         ),
         migrations.SeparateDatabaseAndState(state_operations=state_operations),
     ]
